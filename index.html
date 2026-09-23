@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0D0D0F" />
+    <meta name="description" content="See how advercharge recognizes the vehicles arriving at a charging station and triggers the matching ad automatically." />
+    <title>advercharge | Reach the right driver</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="config.js"></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <div class="site-shell">
+      <header class="site-header">
+        <a class="brand" href="#overview" aria-label="advercharge home">
+          <span class="brand-copy"><strong>advercharge</strong></span>
+        </a>
+        <nav class="nav" aria-label="Page sections">
+          <a href="#overview" data-nav="overview">Overview</a>
+          <a href="#arriving" data-nav="arriving">Who's arriving</a>
+          <a href="#delivery" data-nav="delivery">Proven delivery</a>
+          <a href="#insights" data-nav="insights">Insights</a>
+          <a href="#start" data-nav="start">Get started</a>
+        </nav>
+        <div class="header-status"><span class="status-dot" id="statusDot"></span><span id="statusText">Checking connection</span></div>
+      </header>
+
+      <main id="overview">
+        <section class="hero">
+          <div class="hero-inner">
+            <div class="hero-copy">
+              <p class="eyebrow"><span class="eyebrow-line"></span> LIVE PILOT / BARTH STATION</p>
+              <h1>The right ad.<br /><em>The right driver.</em><br />Every time.</h1>
+              <p class="hero-lede">advercharge recognizes the vehicle arriving at a charging station, by unique identifier or AI vision, and triggers the matching ad automatically. Proven today at our Barth pilot, built to expand to every station in the network.</p>
+              <div class="hero-actions">
+                <a class="button button-primary" href="#start">Talk to us about your brand <span aria-hidden="true">↗</span></a>
+                <span class="updated-at" id="updatedAt">Waiting for data</span>
+              </div>
+            </div>
+            <div class="hero-art" aria-hidden="true">
+              <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit orbit-three"></div>
+              <div class="orb orb-one"></div><div class="orb orb-two"></div><div class="orb orb-three"></div>
+              <div class="hero-art-label">DETECT / RECOGNIZE / DELIVER</div>
+              <div class="hero-art-icon">↗</div>
+            </div>
+          </div>
+        </section>
+
+        <div class="content-wrap">
+          <div class="data-message" id="dataMessage" role="status" hidden></div>
+
+          <section class="intro-grid section" aria-label="Pipeline results">
+            <div class="metric metric-feature"><span class="metric-label">Vehicles reached</span><strong id="metricSessions">—</strong><span class="metric-detail">Charging sessions, this period</span><span class="metric-glyph" aria-hidden="true">↗</span></div>
+            <div class="metric"><span class="metric-label">Automatically recognized</span><strong id="metricRecognized">—</strong><span class="metric-detail">By unique identifier or AI vision</span></div>
+            <div class="metric"><span class="metric-label">Ads triggered</span><strong id="metricTriggered">—</strong><span class="metric-detail">Matched to the arriving vehicle</span></div>
+            <div class="metric"><span class="metric-label">Verified plays</span><strong id="metricPlayback">—</strong><span class="metric-detail">Confirmed on screen</span></div>
+          </section>
+
+          <div class="section-heading"><div><p class="kicker">LIVE ACTIVITY</p><h2>It's working right now</h2></div><p>Real charging sessions, real recognitions, real ads.</p></div>
+          <section class="pulse-grid section" aria-label="Live activity">
+            <article class="panel panel-large"><div class="panel-head"><div><span class="panel-kicker">SESSIONS</span><h3>Charging activity, last 14 days</h3></div><span class="panel-note">Barth pilot</span></div><div class="chart-area" id="sessionChart"></div></article>
+            <article class="panel panel-dark"><div class="panel-head"><div><span class="panel-kicker">THE FUNNEL</span><h3>Reach to delivery</h3></div><span class="mini-arrow">↗</span></div><div class="outcome-list" id="outcomeList"></div></article>
+          </section>
+
+          <section class="detail-section" id="how-it-works">
+            <div class="section-heading"><div><p class="kicker">HOW IT WORKS</p><h2>Three steps, fully automatic</h2></div><p>From arrival to ad, no one touches a thing.</p></div>
+            <div class="steps-grid">
+              <article class="step-card"><span class="step-icon step-icon-detect">◎</span><span class="step-number">01</span><h3>Detect</h3><p>A camera watches the charging bay and spots the vehicle the moment it arrives.</p></article>
+              <article class="step-card"><span class="step-icon step-icon-recognize">✦</span><span class="step-number">02</span><h3>Recognize</h3><p>The vehicle is identified automatically, by its unique identifier or AI vision.</p></article>
+              <article class="step-card"><span class="step-icon step-icon-deliver">↗</span><span class="step-number">03</span><h3>Deliver</h3><p>The matching ad triggers on screen in real time, precisely targeted, every time.</p></article>
+            </div>
+          </section>
+
+          <section class="detail-section" id="arriving">
+            <div class="section-heading"><div><p class="kicker">01 / WHO'S ARRIVING</p><h2>We know the car before you do</h2></div><p>Every arrival, identified automatically.</p></div>
+            <div class="section-controls"><label>Period <select id="periodFilter"><option value="30">Last 30 days</option><option value="7">Last 7 days</option><option value="90">Last 90 days</option><option value="all">All available</option></select></label></div>
+            <div class="two-column"><article class="panel"><div class="panel-head"><div><span class="panel-kicker">BRANDS SEEN</span><h3>Vehicle mix</h3></div><span class="panel-note" id="vehicleCount">— recognized</span></div><div id="vehicleChart" class="bar-list"></div></article><article class="panel"><div class="panel-head"><div><span class="panel-kicker">JUST RECOGNIZED</span><h3>Live recognition feed</h3></div></div><div id="cameraEvents" class="compact-list"></div></article></div>
+          </section>
+
+          <section class="detail-section" id="delivery">
+            <div class="section-heading"><div><p class="kicker">02 / PROVEN DELIVERY</p><h2>Not just triggered, verified</h2></div><p>Every ad decision and playback, traceable.</p></div>
+            <div class="media-stat-row"><div class="media-stat"><span>Ads triggered</span><strong id="mediaTriggers">—</strong></div><div class="media-stat"><span>Delivered to screen</span><strong id="mediaSuccess">—</strong></div><div class="media-stat"><span>Verified plays</span><strong id="mediaPlays">—</strong></div></div>
+            <div class="two-column"><article class="panel"><div class="panel-head"><div><span class="panel-kicker">TRIGGER LOG</span><h3>Latest decisions</h3></div></div><div id="triggerList" class="compact-list"></div></article><article class="panel"><div class="panel-head"><div><span class="panel-kicker">PROOF OF PLAY</span><h3>Latest confirmed playback</h3></div></div><div id="playList" class="compact-list"></div></article></div>
+          </section>
+
+          <section class="detail-section" id="insights">
+            <div class="section-heading"><div><p class="kicker">03 / INSIGHTS</p><h2>What the data actually shows</h2></div><p>Full brand breakdown and repeat visits, tracked without exposing identity.</p></div>
+            <div class="media-stat-row"><div class="media-stat"><span>Unique vehicles tracked</span><strong id="insightUnique">—</strong></div><div class="media-stat"><span>Returned more than once</span><strong id="insightRepeat">—</strong></div><div class="media-stat"><span>Repeat rate</span><strong id="insightRepeatRate">—</strong></div></div>
+            <div class="two-column"><article class="panel"><div class="panel-head"><div><span class="panel-kicker">FULL BREAKDOWN</span><h3>Every brand seen</h3></div><span class="panel-note" id="insightBrandCount">— brands</span></div><div id="insightBrandChart" class="bar-list"></div></article><article class="panel"><div class="panel-head"><div><span class="panel-kicker">LOYALTY SIGNAL</span><h3>Most frequent visitors</h3></div></div><div id="insightRepeatList" class="compact-list"></div></article></div>
+          </section>
+
+          <section class="detail-section" id="about">
+            <div class="section-heading"><div><p class="kicker">WHO WE ARE</p><h2>Charging infrastructure, built for attention</h2></div><p>What advercharge does, and why it works.</p></div>
+            <div class="about-panel">
+              <div class="about-copy">
+                <p>advercharge combines electric vehicle charging infrastructure with real-time vehicle recognition. Every charging session becomes a precisely targeted advertising moment, no guesswork, no wasted impressions, just the right ad in front of the right driver while they're plugged in and paying attention.</p>
+                <p>We build and operate the stations, the cameras, and the intelligence behind them, so brands don't have to think about infrastructure, just the audience they want to reach.</p>
+              </div>
+              <div class="about-highlight">
+                <span class="about-highlight-label">Live pilot</span>
+                <strong>Barth, Germany</strong>
+                <span class="about-highlight-detail">Expanding to new stations next</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="detail-section cta-section" id="start">
+            <div class="cta-panel">
+              <div>
+                <p class="kicker cta-kicker">GET STARTED</p>
+                <h2>Want your ad shown to the right driver?</h2>
+                <p class="cta-lede">Tell us which vehicles you want to reach, we'll show your ad the moment they arrive to charge.</p>
+              </div>
+              <a class="button button-primary" href="mailto:ads@advercharge.eu?subject=advercharge%20pilot%20inquiry">Get in touch <span aria-hidden="true">↗</span></a>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <footer class="footer"><span class="footer-brand">advercharge<span>.</span></span><span>Live pilot · Barth station</span><span id="footerStatus">Data updates on refresh</span></footer>
+    </div>
+  </body>
+</html>
