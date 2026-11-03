@@ -1,6 +1,9 @@
 // This dashboard is scoped to a single station: Barth.
 // Connector mapping per station configuration: 1 = right bay, 2 = left bay.
 const BARTH_STATION_SN = '2251110030800001';
+const TIMEZONE = 'Europe/Berlin';          // a "day" on this page is a Berlin calendar day
+const POP_RETENTION_DAYS = 14;             // the live proof_of_play table keeps about 14 days
+const MAX_CUSTOM_RANGE_DAYS = 90;          // keeps every request light on the database
 const connectorLabel = id => (String(id) === '1' ? 'Right connector' : String(id) === '2' ? 'Left connector' : `Connector ${id}`);
 
 // The browser only requests these public views and these explicit columns.
@@ -26,11 +29,6 @@ const DATASETS = {
     columns: ['id','session_id','platform','player_id','trigger_id','campaign_name','trigger_reason','status','latency_ms','created_at','camera_event_id','campaign_id'],
     display: ['campaign_name','platform','player_id','status','latency_ms','created_at']
   },
-  proof_of_play: {
-    label: 'Proof of play', view: 'public_dashboard_proof_of_play', order: 'played_at.desc', maxRows: 1000,
-    columns: ['id','session_id','campaign_id','player_id','played_at','duration_seconds','impressions','measurement_type'],
-    display: ['campaign_id','player_id','played_at','duration_seconds','impressions','measurement_type']
-  },
   station_connectors: {
     label: 'Station connectors', view: 'public_dashboard_station_connectors', order: 'station_sn.asc',
     columns: ['station_sn','connector_id','site_name','connector_name','controller_id','camera_id','player_id','active'],
@@ -38,7 +36,16 @@ const DATASETS = {
   }
 };
 
+// Proof of play is large, so it is NOT downloaded in bulk. The database filters it by station and
+// date range (needs the station_sn column from fix_proof_of_play_station.sql) and returns an exact
+// count plus the latest few rows.
+const PLAYS = {
+  label: 'Proof of play', view: 'public_dashboard_proof_of_play', recent: 5,
+  columns: ['id','campaign_id','player_id','played_at','duration_seconds','impressions','measurement_type']
+};
+
 const state = {
+  plays: [], playTotal: null, playRequest: 0, notice: '',
   data: Object.fromEntries(Object.keys(DATASETS).map(name => [name, []])),
   errors: {}, selectedDataset: 'charging_sessions', partial: {}, connected: false
 };
@@ -49,6 +56,53 @@ const label = value => String(value).replaceAll('_', ' ').replace(/\b\w/g, char 
 const dateValue = value => { const date = new Date(value); return Number.isNaN(date.getTime()) ? 0 : date.getTime(); };
 const formatDate = value => value && dateValue(value) ? new Date(value).toLocaleDateString('en-GB', {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
 const empty = message => `<div class="empty">${escapeHtml(message)}</div>`;
+
+const berlinToday = () => new Intl.DateTimeFormat('en-CA', {timeZone: TIMEZONE}).format(new Date());
+const addDays = (ymd, n) => { const [y, m, d] = ymd.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); };
+
+// Offset of Berlin from UTC at a given instant (handles summer/winter time).
+function berlinOffsetMs(utcMs) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: TIMEZONE, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  }).formatToParts(new Date(utcMs)).filter(part => part.type !== 'literal').map(part => [part.type, Number(part.value)]));
+  return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second) - Math.floor(utcMs / 1000) * 1000;
+}
+// 00:00 Berlin time on a YYYY-MM-DD date, as UTC milliseconds.
+function berlinMidnightMs(ymd) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const wall = Date.UTC(y, m - 1, d);
+  const first = wall - berlinOffsetMs(wall);
+  return wall - berlinOffsetMs(first);
+}
+
+// Current selection as {from, to} in UTC ms (null = open end). "to" is exclusive.
+function currentRange() {
+  const choice = $('#periodFilter').value;
+  if (choice === 'custom') {
+    const from = $('#dateFrom').value, to = $('#dateTo').value;
+    return {from: from ? berlinMidnightMs(from) : null, to: to ? berlinMidnightMs(addDays(to, 1)) : null};
+  }
+  if (choice === 'all') return {from: null, to: null};
+  return {from: Date.now() - Number(choice) * 86400000, to: null};
+}
+
+// Keep the custom dates valid: not in the future, not reversed, at most 90 days.
+function normalizeCustomRange() {
+  const fromInput = $('#dateFrom'), toInput = $('#dateTo');
+  const today = berlinToday();
+  fromInput.max = toInput.max = today;
+  if (!toInput.value) toInput.value = today;
+  if (!fromInput.value) fromInput.value = addDays(toInput.value, -29);
+  if (toInput.value > today) toInput.value = today;
+  if (fromInput.value > toInput.value) fromInput.value = toInput.value;
+  const earliest = addDays(toInput.value, -(MAX_CUSTOM_RANGE_DAYS - 1));
+  state.notice = '';
+  if (fromInput.value < earliest) {
+    fromInput.value = earliest;
+    state.notice = `Custom ranges are limited to ${MAX_CUSTOM_RANGE_DAYS} days. The start date was adjusted.`;
+  }
+}
 
 function showMessage(message, tone = 'notice') {
   const element = $('#dataMessage');
@@ -107,9 +161,67 @@ function scopeToBarth() {
       barthSessionIds.has(row.session_id) || (row.camera_event_id && barthCameraEventIds.has(row.camera_event_id))
     );
   });
-  // proof_of_play has no session_id populated at the source, so it can't be joined to a
-  // session or station yet. Barth is currently the only live station, so leaving this
-  // dataset unfiltered is correct today. Revisit once a second station exists.
+  // Proof of play is not in state.data: loadPlays() asks the database for Barth only, using the
+  // station_sn column that comes from station_connectors.player_id (see 06_Data_Model.md).
+}
+
+function requestHeaders(connection, extra = {}) {
+  const headers = {apikey: connection.key, ...extra};
+  if (connection.key.startsWith('eyJ')) headers.Authorization = `Bearer ${connection.key}`;
+  return headers;
+}
+
+// Exact Barth play count for the selected dates, plus the latest few plays.
+async function loadPlays() {
+  const connection = config();
+  if (!connection.url || !connection.key) return;
+  const requestId = ++state.playRequest;
+  const {from, to} = currentRange();
+  const params = new URLSearchParams({
+    select: PLAYS.columns.join(','), order: 'played_at.desc', limit: String(PLAYS.recent),
+    station_sn: `eq.${BARTH_STATION_SN}`
+  });
+  if (from !== null) params.append('played_at', `gte.${new Date(from).toISOString()}`);
+  if (to !== null) params.append('played_at', `lt.${new Date(to).toISOString()}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(`${connection.url}/rest/v1/${PLAYS.view}?${params}`, {
+      headers: requestHeaders(connection, {Prefer: 'count=exact'}), signal: controller.signal
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(`${PLAYS.label}: ${detail.message || `HTTP ${response.status}`}`);
+    }
+    const rows = await response.json();
+    if (!Array.isArray(rows)) throw new Error(`${PLAYS.label}: unexpected response`);
+    const match = /\/(\d+)$/.exec(response.headers.get('Content-Range') || '');
+    if (requestId !== state.playRequest) return;   // a newer selection superseded this one
+    state.plays = rows;
+    state.playTotal = match ? Number(match[1]) : rows.length;
+    delete state.errors.proof_of_play;
+  } catch (error) {
+    if (requestId !== state.playRequest) return;
+    state.plays = [];
+    state.playTotal = null;
+    state.errors.proof_of_play = error.message || 'Proof of play request failed';
+  } finally {
+    clearTimeout(timeout);
+  }
+  refreshMessage();
+  render();
+}
+
+function refreshMessage() {
+  if (Object.keys(state.errors).length) {
+    showMessage(`Some datasets could not load: ${Object.values(state.errors).join(' · ')}`, 'error');
+  } else if (state.notice) {
+    showMessage(state.notice);
+  } else if (Object.values(state.partial).some(Boolean)) {
+    showMessage('Some datasets have more than 5,000 rows. Figures on this page use the most recent 5,000 rows per dataset.');
+  } else {
+    $('#dataMessage').hidden = true;
+  }
 }
 
 async function loadData() {
@@ -123,8 +235,9 @@ async function loadData() {
   }
   $('#statusText').textContent = 'Loading data';
   const entries = Object.entries(DATASETS);
+  const playsLoading = loadPlays();
   const results = await Promise.allSettled(entries.map(([name, spec]) => fetchDataset(connection, name, spec)));
-  state.errors = {};
+  state.errors = state.errors.proof_of_play ? {proof_of_play: state.errors.proof_of_play} : {};
   results.forEach((result, index) => {
     const name = entries[index][0];
     if (result.status === 'fulfilled') {
@@ -135,28 +248,23 @@ async function loadData() {
     }
   });
   scopeToBarth();
-  state.connected = Object.keys(state.errors).length < entries.length;
+  state.connected = Object.keys(state.errors).length < entries.length + 1;
   $('#statusText').textContent = state.connected ? 'Live network data' : 'Connection unavailable';
   $('#statusDot').classList.toggle('is-live', state.connected);
   $('#updatedAt').textContent = state.connected ? `Updated ${formatDate(new Date())}` : 'Waiting for data';
   $('#footerStatus').textContent = state.connected ? `Updated ${formatDate(new Date())}` : 'Live data unavailable';
-  if (Object.keys(state.errors).length) {
-    showMessage(`Some datasets could not load: ${Object.values(state.errors).join(' · ')}`, 'error');
-  } else if (Object.values(state.partial).some(Boolean)) {
-    showMessage('Some datasets have more than 5,000 rows. Figures on this page use the most recent 5,000 rows per dataset.');
-  } else {
-    $('#dataMessage').hidden = true;
-  }
+  refreshMessage();
   render();
-}
-
-function withinPeriod(row, field, days) {
-  return days === 'all' || (dateValue(row[field]) > 0 && dateValue(row[field]) >= Date.now() - Number(days) * 86400000);
+  await playsLoading;
 }
 
 function filtered(name, field) {
-  const days = $('#periodFilter').value;
-  return state.data[name].filter(row => !field || withinPeriod(row, field, days));
+  const {from, to} = currentRange();
+  return state.data[name].filter(row => {
+    if (!field) return true;
+    const time = dateValue(row[field]);
+    return time > 0 && (from === null || time >= from) && (to === null || time < to);
+  });
 }
 
 function list(items, toMarkup, emptyMessage) {
@@ -181,20 +289,26 @@ function renderChart(sessions) {
   $('#sessionChart').innerHTML = `<div class="chart-bars">${counts.map((count, index) => `<div class="chart-column" title="${escapeHtml(days[index].toDateString())}: ${count} sessions"><span style="height:${Math.max(3, count / max * 100)}%"></span></div>`).join('')}</div><div class="chart-axis"><span>${days[0].toLocaleDateString('en-GB', {day:'2-digit',month:'short'})}</span><span>${days[6].toLocaleDateString('en-GB', {day:'2-digit',month:'short'})}</span><span>${days[13].toLocaleDateString('en-GB', {day:'2-digit',month:'short'})}</span></div>`;
 }
 
+function playDetailText() {
+  const {from} = currentRange();
+  const limited = from === null || from < Date.now() - POP_RETENTION_DAYS * 86400000;
+  return limited ? `Confirmed on screen · last ${POP_RETENTION_DAYS} days available` : 'Confirmed on screen';
+}
+
 function renderOverview() {
   const sessions = filtered('charging_sessions', 'created_at');
-  const plays = filtered('proof_of_play', 'played_at');
   const triggers = filtered('ad_trigger_logs', 'created_at');
   const recognized = sessions.filter(row => row.resolved_brand);
   $('#metricSessions').textContent = formatNumber(sessions.length);
   $('#metricRecognized').textContent = formatNumber(recognized.length);
   $('#metricTriggered').textContent = formatNumber(triggers.length);
-  $('#metricPlayback').textContent = formatNumber(plays.length);
+  $('#metricPlayback').textContent = state.playTotal === null ? '—' : formatNumber(state.playTotal);
+  $('#playDetail').textContent = playDetailText();
   $('#outcomeList').innerHTML = [
     ['Vehicles reached', sessions.length],
     ['Automatically recognized', recognized.length],
     ['Ads triggered', triggers.length],
-    ['Verified plays', plays.length]
+    ['Verified plays', state.playTotal ?? 0]
   ].map(([name, count]) => `<div class="outcome"><span>${escapeHtml(name)}</span><strong>${formatNumber(count)}</strong></div>`).join('');
   renderChart(sessions);
 }
@@ -210,13 +324,12 @@ function renderVehicles() {
 
 function renderMedia() {
   const triggers = filtered('ad_trigger_logs', 'created_at');
-  const plays = filtered('proof_of_play', 'played_at');
   const successful = triggers.filter(row => ['success', 'delivered', 'completed', 'published', 'executed'].includes(String(row.status).toLowerCase())).length;
   $('#mediaTriggers').textContent = formatNumber(triggers.length);
   $('#mediaSuccess').textContent = formatNumber(successful);
-  $('#mediaPlays').textContent = formatNumber(plays.length);
+  $('#mediaPlays').textContent = state.playTotal === null ? '—' : formatNumber(state.playTotal);
   $('#triggerList').innerHTML = list(triggers, row => `<div class="compact-row"><div class="compact-symbol media-symbol">✦</div><div class="compact-main"><strong>${escapeHtml(row.campaign_name || row.campaign_id || 'Campaign')}</strong><span>${escapeHtml(row.platform || 'Media platform')} · ${formatDate(row.created_at)}</span></div><span class="status-chip">${escapeHtml(row.status || 'Recorded')}</span></div>`, 'No ad triggers for this selection.');
-  $('#playList').innerHTML = list(plays, row => `<div class="compact-row"><div class="compact-symbol media-symbol">▶</div><div class="compact-main"><strong>${escapeHtml(row.campaign_id || 'Campaign')}</strong><span>${escapeHtml(row.player_id || 'Player')} · ${formatDate(row.played_at)}</span></div><b>${formatNumber(row.duration_seconds, 0)}s</b></div>`, 'No confirmed playback for this selection.');
+  $('#playList').innerHTML = list(state.plays, row => `<div class="compact-row"><div class="compact-symbol media-symbol">▶</div><div class="compact-main"><strong>${escapeHtml(row.campaign_id || 'Campaign')}</strong><span>${escapeHtml(row.player_id || 'Player')} · ${formatDate(row.played_at)}</span></div><b>${formatNumber(row.duration_seconds, 0)}s</b></div>`, 'No confirmed playback for this selection.');
 }
 
 function renderInsights() {
@@ -257,7 +370,17 @@ function render() {
   renderInsights();
 }
 
-$('#periodFilter').addEventListener('change', render);
+function onRangeChange() {
+  const custom = $('#periodFilter').value === 'custom';
+  $('#dateRange').hidden = !custom;
+  if (custom) normalizeCustomRange(); else state.notice = '';
+  refreshMessage();
+  render();
+  loadPlays();
+}
+$('#periodFilter').addEventListener('change', onRangeChange);
+$('#dateFrom').addEventListener('change', onRangeChange);
+$('#dateTo').addEventListener('change', onRangeChange);
 const nav = [...document.querySelectorAll('[data-nav]')];
 function markNavigation() {
   const section = (location.hash || '#overview').slice(1);
