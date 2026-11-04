@@ -1,3 +1,5 @@
+import { recognitionRecords, sourceLabel } from './recognition.mjs';
+
 // This dashboard is scoped to a single station: Barth.
 // Connector mapping per station configuration: 1 = right bay, 2 = left bay.
 const BARTH_STATION_SN = '2251110030800001';
@@ -54,7 +56,7 @@ const formatNumber = (value, digits = 0) => new Intl.NumberFormat('en-US', {maxi
 const escapeHtml = value => String(value ?? '—').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const label = value => String(value).replaceAll('_', ' ').replace(/\b\w/g, char => char.toUpperCase());
 const dateValue = value => { const date = new Date(value); return Number.isNaN(date.getTime()) ? 0 : date.getTime(); };
-const formatDate = value => value && dateValue(value) ? new Date(value).toLocaleDateString('en-GB', {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+const formatDate = value => value && dateValue(value) ? new Date(value).toLocaleDateString('en-GB', {timeZone: TIMEZONE,day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
 const empty = message => `<div class="empty">${escapeHtml(message)}</div>`;
 
 const berlinToday = () => new Intl.DateTimeFormat('en-CA', {timeZone: TIMEZONE}).format(new Date());
@@ -267,6 +269,15 @@ function filtered(name, field) {
   });
 }
 
+function vehiclesInRange() {
+  const {from, to} = currentRange();
+  return recognitionRecords(state.data.charging_sessions, state.data.vehicle_observations, state.data.camera_events)
+    .filter(row => {
+      const time = dateValue(row.arrived_at);
+      return time > 0 && (from === null || time >= from) && (to === null || time < to);
+    });
+}
+
 function list(items, toMarkup, emptyMessage) {
   return items.length ? items.slice(0, 5).map(toMarkup).join('') : empty(emptyMessage);
 }
@@ -296,9 +307,9 @@ function playDetailText() {
 }
 
 function renderOverview() {
-  const sessions = filtered('charging_sessions', 'created_at');
+  const sessions = vehiclesInRange();
   const triggers = filtered('ad_trigger_logs', 'created_at');
-  const recognized = sessions.filter(row => row.resolved_brand);
+  const recognized = sessions.filter(row => row.brand);
   $('#metricSessions').textContent = formatNumber(sessions.length);
   $('#metricRecognized').textContent = formatNumber(recognized.length);
   $('#metricTriggered').textContent = formatNumber(triggers.length);
@@ -314,12 +325,13 @@ function renderOverview() {
 }
 
 function renderVehicles() {
-  const observations = filtered('vehicle_observations', 'observed_at');
+  const vehicles = vehiclesInRange();
+  const recognized = vehicles.filter(row => row.brand).sort((a, b) => dateValue(b.recognized_at) - dateValue(a.recognized_at));
   const makes = new Map();
-  observations.forEach(row => makes.set(row.make || 'Unidentified', (makes.get(row.make || 'Unidentified') || 0) + 1));
+  vehicles.forEach(row => makes.set(row.brand || 'Unidentified', (makes.get(row.brand || 'Unidentified') || 0) + 1));
   renderBarList($('#vehicleChart'), [...makes]);
-  $('#vehicleCount').textContent = `${formatNumber(observations.length)} recognized`;
-  $('#cameraEvents').innerHTML = list(observations, row => `<div class="compact-row"><div class="compact-symbol camera-symbol">◎</div><div class="compact-main"><strong>${escapeHtml([row.make, row.model].filter(Boolean).join(' ') || 'Vehicle recognized')}</strong><span>${escapeHtml(row.color || row.source || 'Recognized')} · ${formatDate(row.observed_at)}</span></div><span class="status-chip">${escapeHtml(row.source === 'evccid_prefix' ? 'Unique identifier' : 'AI vision')}</span></div>`, 'No vehicles recognized for this selection.');
+  $('#vehicleCount').textContent = `${formatNumber(recognized.length)} of ${formatNumber(vehicles.length)} recognized`;
+  $('#cameraEvents').innerHTML = list(recognized, row => `<div class="compact-row"><div class="compact-symbol camera-symbol">◎</div><div class="compact-main"><strong>${escapeHtml([row.brand, row.model].filter(Boolean).join(' '))}</strong><span>${escapeHtml(row.color || (sourceLabel(row.source) === 'Unique identifier' ? 'EVCCID lookup' : sourceLabel(row.source)))} · ${formatDate(row.recognized_at)}</span></div><span class="status-chip">${escapeHtml(sourceLabel(row.source))}</span></div>`, 'No vehicles recognized for this selection.');
 }
 
 function renderMedia() {
@@ -333,10 +345,10 @@ function renderMedia() {
 }
 
 function renderInsights() {
-  const sessions = filtered('charging_sessions', 'created_at');
+  const sessions = vehiclesInRange();
   const brands = new Map();
   sessions.forEach(row => {
-    const brand = row.resolved_brand || 'Unidentified';
+    const brand = row.brand || 'Unidentified';
     brands.set(brand, (brands.get(brand) || 0) + 1);
   });
   renderBarList($('#insightBrandChart'), [...brands], '', 20);
@@ -358,7 +370,7 @@ function renderInsights() {
   const ranked = repeatVehicles.sort((a, b) => b.length - a.length).slice(0, 5);
   $('#insightRepeatList').innerHTML = ranked.length ? ranked.map((visits, index) => {
     const latest = visits.reduce((best, row) => dateValue(row.created_at) > dateValue(best.created_at) ? row : best, visits[0]);
-    const brand = visits.find(row => row.resolved_brand)?.resolved_brand;
+    const brand = visits.find(row => row.brand)?.brand;
     return `<div class="compact-row"><div class="compact-symbol media-symbol">↻</div><div class="compact-main"><strong>Returning vehicle #${index + 1}${brand ? ` · ${escapeHtml(brand)}` : ''}</strong><span>${visits.length} visits · last seen ${formatDate(latest.created_at)}</span></div></div>`;
   }).join('') : empty('No repeat visits yet for this selection.');
 }
