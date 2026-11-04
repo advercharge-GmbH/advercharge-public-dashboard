@@ -1,4 +1,5 @@
 import { recognitionRecords, sourceLabel } from './recognition.mjs';
+import { t, locale, setupLanguage } from './i18n.mjs';
 
 // This dashboard is scoped to a single station: Barth.
 // Connector mapping per station configuration: 1 = right bay, 2 = left bay.
@@ -49,15 +50,16 @@ const PLAYS = {
 const state = {
   plays: [], playTotal: null, playRequest: 0, notice: '',
   data: Object.fromEntries(Object.keys(DATASETS).map(name => [name, []])),
-  errors: {}, selectedDataset: 'charging_sessions', partial: {}, connected: false
+  errors: {}, selectedDataset: 'charging_sessions', partial: {}, connected: false,
+  status: 'Checking connection', updatedAt: null
 };
 const $ = selector => document.querySelector(selector);
-const formatNumber = (value, digits = 0) => new Intl.NumberFormat('en-US', {maximumFractionDigits: digits}).format(Number(value) || 0);
+const formatNumber = (value, digits = 0) => new Intl.NumberFormat(locale(), {maximumFractionDigits: digits}).format(Number(value) || 0);
 const escapeHtml = value => String(value ?? '—').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const label = value => String(value).replaceAll('_', ' ').replace(/\b\w/g, char => char.toUpperCase());
 const dateValue = value => { const date = new Date(value); return Number.isNaN(date.getTime()) ? 0 : date.getTime(); };
-const formatDate = value => value && dateValue(value) ? new Date(value).toLocaleDateString('en-GB', {timeZone: TIMEZONE,day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
-const empty = message => `<div class="empty">${escapeHtml(message)}</div>`;
+const formatDate = value => value && dateValue(value) ? new Date(value).toLocaleDateString(locale(), {timeZone: TIMEZONE,day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+const empty = message => `<div class="empty">${escapeHtml(t(message))}</div>`;
 
 const berlinToday = () => new Intl.DateTimeFormat('en-CA', {timeZone: TIMEZONE}).format(new Date());
 const addDays = (ymd, n) => { const [y, m, d] = ymd.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); };
@@ -102,7 +104,7 @@ function normalizeCustomRange() {
   state.notice = '';
   if (fromInput.value < earliest) {
     fromInput.value = earliest;
-    state.notice = `Custom ranges are limited to ${MAX_CUSTOM_RANGE_DAYS} days. The start date was adjusted.`;
+    state.notice = 'customRange';
   }
 }
 
@@ -216,11 +218,11 @@ async function loadPlays() {
 
 function refreshMessage() {
   if (Object.keys(state.errors).length) {
-    showMessage(`Some datasets could not load: ${Object.values(state.errors).join(' · ')}`, 'error');
+    showMessage(t('Some datasets could not load: {errors}', {errors: Object.values(state.errors).map(message => t(message)).join(' · ')}), 'error');
   } else if (state.notice) {
-    showMessage(state.notice);
+    showMessage(t('Custom ranges are limited to {days} days. The start date was adjusted.', {days: MAX_CUSTOM_RANGE_DAYS}));
   } else if (Object.values(state.partial).some(Boolean)) {
-    showMessage('Some datasets have more than 5,000 rows. Figures on this page use the most recent 5,000 rows per dataset.');
+    showMessage(t('Some datasets have more than 5,000 rows. Figures on this page use the most recent 5,000 rows per dataset.'));
   } else {
     $('#dataMessage').hidden = true;
   }
@@ -229,13 +231,12 @@ function refreshMessage() {
 async function loadData() {
   const connection = config();
   if (!connection.url || !connection.key) {
-    showMessage('Live data is not configured yet. Set the public project URL and publishable key in config.js to connect this dashboard.');
-    $('#statusText').textContent = 'Configuration needed';
-    $('#footerStatus').textContent = 'Live data not connected';
+    state.status = 'Configuration needed';
     render();
     return;
   }
-  $('#statusText').textContent = 'Loading data';
+  state.status = 'Loading data';
+  renderConnection();
   const entries = Object.entries(DATASETS);
   const playsLoading = loadPlays();
   const results = await Promise.allSettled(entries.map(([name, spec]) => fetchDataset(connection, name, spec)));
@@ -251,10 +252,9 @@ async function loadData() {
   });
   scopeToBarth();
   state.connected = Object.keys(state.errors).length < entries.length + 1;
-  $('#statusText').textContent = state.connected ? 'Live network data' : 'Connection unavailable';
+  state.status = state.connected ? 'Live network data' : 'Connection unavailable';
   $('#statusDot').classList.toggle('is-live', state.connected);
-  $('#updatedAt').textContent = state.connected ? `Updated ${formatDate(new Date())}` : 'Waiting for data';
-  $('#footerStatus').textContent = state.connected ? `Updated ${formatDate(new Date())}` : 'Live data unavailable';
+  state.updatedAt = state.connected ? new Date() : null;
   refreshMessage();
   render();
   await playsLoading;
@@ -297,13 +297,13 @@ function renderChart(sessions) {
   });
   const counts = days.map(day => sessions.filter(row => new Date(row.created_at).toDateString() === day.toDateString()).length);
   const max = Math.max(1, ...counts);
-  $('#sessionChart').innerHTML = `<div class="chart-bars">${counts.map((count, index) => `<div class="chart-column" title="${escapeHtml(days[index].toDateString())}: ${count} sessions"><span style="height:${Math.max(3, count / max * 100)}%"></span></div>`).join('')}</div><div class="chart-axis"><span>${days[0].toLocaleDateString('en-GB', {day:'2-digit',month:'short'})}</span><span>${days[6].toLocaleDateString('en-GB', {day:'2-digit',month:'short'})}</span><span>${days[13].toLocaleDateString('en-GB', {day:'2-digit',month:'short'})}</span></div>`;
+  $('#sessionChart').innerHTML = `<div class="chart-bars">${counts.map((count, index) => `<div class="chart-column" title="${escapeHtml(days[index].toLocaleDateString(locale(), {timeZone: TIMEZONE}))}: ${escapeHtml(t('{count} sessions', {count: formatNumber(count)}))}"><span style="height:${Math.max(3, count / max * 100)}%"></span></div>`).join('')}</div><div class="chart-axis"><span>${days[0].toLocaleDateString(locale(), {timeZone: TIMEZONE,day:'2-digit',month:'short'})}</span><span>${days[6].toLocaleDateString(locale(), {timeZone: TIMEZONE,day:'2-digit',month:'short'})}</span><span>${days[13].toLocaleDateString(locale(), {timeZone: TIMEZONE,day:'2-digit',month:'short'})}</span></div>`;
 }
 
 function playDetailText() {
   const {from} = currentRange();
   const limited = from === null || from < Date.now() - POP_RETENTION_DAYS * 86400000;
-  return limited ? `Confirmed on screen · last ${POP_RETENTION_DAYS} days available` : 'Confirmed on screen';
+  return limited ? t('Confirmed on screen · last {days} days available', {days: POP_RETENTION_DAYS}) : t('Confirmed on screen');
 }
 
 function renderOverview() {
@@ -320,7 +320,7 @@ function renderOverview() {
     ['Automatically recognized', recognized.length],
     ['Ads triggered', triggers.length],
     ['Verified plays', state.playTotal ?? 0]
-  ].map(([name, count]) => `<div class="outcome"><span>${escapeHtml(name)}</span><strong>${formatNumber(count)}</strong></div>`).join('');
+  ].map(([name, count]) => `<div class="outcome"><span>${escapeHtml(t(name))}</span><strong>${formatNumber(count)}</strong></div>`).join('');
   renderChart(sessions);
 }
 
@@ -328,10 +328,10 @@ function renderVehicles() {
   const vehicles = vehiclesInRange();
   const recognized = vehicles.filter(row => row.brand).sort((a, b) => dateValue(b.recognized_at) - dateValue(a.recognized_at));
   const makes = new Map();
-  vehicles.forEach(row => makes.set(row.brand || 'Unidentified', (makes.get(row.brand || 'Unidentified') || 0) + 1));
+  vehicles.forEach(row => makes.set(row.brand || t('Unidentified'), (makes.get(row.brand || t('Unidentified')) || 0) + 1));
   renderBarList($('#vehicleChart'), [...makes]);
-  $('#vehicleCount').textContent = `${formatNumber(recognized.length)} of ${formatNumber(vehicles.length)} recognized`;
-  $('#cameraEvents').innerHTML = list(recognized, row => `<div class="compact-row"><div class="compact-symbol camera-symbol">◎</div><div class="compact-main"><strong>${escapeHtml([row.brand, row.model].filter(Boolean).join(' '))}</strong><span>${escapeHtml(row.color || (sourceLabel(row.source) === 'Unique identifier' ? 'EVCCID lookup' : sourceLabel(row.source)))} · ${formatDate(row.recognized_at)}</span></div><span class="status-chip">${escapeHtml(sourceLabel(row.source))}</span></div>`, 'No vehicles recognized for this selection.');
+  $('#vehicleCount').textContent = t('{recognized} of {total} recognized', {recognized: formatNumber(recognized.length), total: formatNumber(vehicles.length)});
+  $('#cameraEvents').innerHTML = list(recognized, row => `<div class="compact-row"><div class="compact-symbol camera-symbol">◎</div><div class="compact-main"><strong>${escapeHtml([row.brand, row.model].filter(Boolean).join(' '))}</strong><span>${escapeHtml(t(row.color || (sourceLabel(row.source) === 'Unique identifier' ? 'EVCCID lookup' : sourceLabel(row.source))))} · ${formatDate(row.recognized_at)}</span></div><span class="status-chip">${escapeHtml(t(sourceLabel(row.source)))}</span></div>`, 'No vehicles recognized for this selection.');
 }
 
 function renderMedia() {
@@ -340,19 +340,19 @@ function renderMedia() {
   $('#mediaTriggers').textContent = formatNumber(triggers.length);
   $('#mediaSuccess').textContent = formatNumber(successful);
   $('#mediaPlays').textContent = state.playTotal === null ? '—' : formatNumber(state.playTotal);
-  $('#triggerList').innerHTML = list(triggers, row => `<div class="compact-row"><div class="compact-symbol media-symbol">✦</div><div class="compact-main"><strong>${escapeHtml(row.campaign_name || row.campaign_id || 'Campaign')}</strong><span>${escapeHtml(row.platform || 'Media platform')} · ${formatDate(row.created_at)}</span></div><span class="status-chip">${escapeHtml(row.status || 'Recorded')}</span></div>`, 'No ad triggers for this selection.');
-  $('#playList').innerHTML = list(state.plays, row => `<div class="compact-row"><div class="compact-symbol media-symbol">▶</div><div class="compact-main"><strong>${escapeHtml(row.campaign_id || 'Campaign')}</strong><span>${escapeHtml(row.player_id || 'Player')} · ${formatDate(row.played_at)}</span></div><b>${formatNumber(row.duration_seconds, 0)}s</b></div>`, 'No confirmed playback for this selection.');
+  $('#triggerList').innerHTML = list(triggers, row => `<div class="compact-row"><div class="compact-symbol media-symbol">✦</div><div class="compact-main"><strong>${escapeHtml(t(row.campaign_name || row.campaign_id || 'Campaign'))}</strong><span>${escapeHtml(t(row.platform || 'Media platform'))} · ${formatDate(row.created_at)}</span></div><span class="status-chip">${escapeHtml(t(row.status || 'Recorded'))}</span></div>`, 'No ad triggers for this selection.');
+  $('#playList').innerHTML = list(state.plays, row => `<div class="compact-row"><div class="compact-symbol media-symbol">▶</div><div class="compact-main"><strong>${escapeHtml(t(row.campaign_id || 'Campaign'))}</strong><span>${escapeHtml(t(row.player_id || 'Player'))} · ${formatDate(row.played_at)}</span></div><b>${formatNumber(row.duration_seconds, 0)}s</b></div>`, 'No confirmed playback for this selection.');
 }
 
 function renderInsights() {
   const sessions = vehiclesInRange();
   const brands = new Map();
   sessions.forEach(row => {
-    const brand = row.brand || 'Unidentified';
+    const brand = row.brand || t('Unidentified');
     brands.set(brand, (brands.get(brand) || 0) + 1);
   });
   renderBarList($('#insightBrandChart'), [...brands], '', 20);
-  $('#insightBrandCount').textContent = `${formatNumber(brands.size)} brands`;
+  $('#insightBrandCount').textContent = t('{count} brands', {count: formatNumber(brands.size)});
 
   const hashVisits = new Map();
   sessions.forEach(row => {
@@ -371,15 +371,25 @@ function renderInsights() {
   $('#insightRepeatList').innerHTML = ranked.length ? ranked.map((visits, index) => {
     const latest = visits.reduce((best, row) => dateValue(row.created_at) > dateValue(best.created_at) ? row : best, visits[0]);
     const brand = visits.find(row => row.brand)?.brand;
-    return `<div class="compact-row"><div class="compact-symbol media-symbol">↻</div><div class="compact-main"><strong>Returning vehicle #${index + 1}${brand ? ` · ${escapeHtml(brand)}` : ''}</strong><span>${visits.length} visits · last seen ${formatDate(latest.created_at)}</span></div></div>`;
+    return `<div class="compact-row"><div class="compact-symbol media-symbol">↻</div><div class="compact-main"><strong>${escapeHtml(t('Returning vehicle #{number}', {number: index + 1}))}${brand ? ` · ${escapeHtml(brand)}` : ''}</strong><span>${escapeHtml(t('{count} visits · last seen {date}', {count: formatNumber(visits.length), date: formatDate(latest.created_at)}))}</span></div></div>`;
   }).join('') : empty('No repeat visits yet for this selection.');
 }
 
+function renderConnection() {
+  $('#statusText').textContent = t(state.status);
+  $('#updatedAt').textContent = state.updatedAt ? t('Updated {date}', {date: formatDate(state.updatedAt)}) : t('Waiting for data');
+  $('#footerStatus').textContent = state.updatedAt ? t('Updated {date}', {date: formatDate(state.updatedAt)}) : t('Data updates on refresh');
+}
+
 function render() {
+  renderConnection();
   renderOverview();
   renderVehicles();
   renderMedia();
   renderInsights();
+  if (!config().url || !config().key) {
+    showMessage(t('Live data is not configured yet. Set the public project URL and publishable key in config.js to connect this dashboard.'));
+  }
 }
 
 function onRangeChange() {
@@ -400,5 +410,8 @@ function markNavigation() {
 }
 window.addEventListener('hashchange', markNavigation);
 markNavigation();
+let languageStorage;
+try { languageStorage = window.localStorage; } catch { /* Language switching also works without storage. */ }
+setupLanguage(document, () => { refreshMessage(); render(); }, languageStorage);
 render();
 loadData();

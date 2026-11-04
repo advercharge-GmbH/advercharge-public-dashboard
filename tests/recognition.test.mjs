@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { knownBrand, recognitionRecords, sourceLabel } from '../recognition.mjs';
+import { t, locale, setupLanguage, setLanguage } from '../i18n.mjs';
 
 const session = (id, fields = {}) => ({id, created_at: '2026-11-03T10:00:00Z', ...fields});
 
@@ -53,6 +54,7 @@ test('unknown results do not inflate recognition counts', () => {
 
 // Exercise the actual application fetch -> station scope -> range -> render path.
 async function dashboard() {
+  setLanguage('en');
   const elements = new Map();
   const get = selector => {
     if (!elements.has(selector)) elements.set(selector, {
@@ -80,13 +82,13 @@ async function dashboard() {
     static now() { return Date.parse('2026-11-04T12:00:00Z'); }
   };
   const context = vm.createContext({
-    recognitionRecords, sourceLabel, Date: FixedDate, Intl, URLSearchParams, AbortController, setTimeout, clearTimeout,
-    document: {querySelector: get, querySelectorAll: () => []}, location: {hash: ''},
+    recognitionRecords, sourceLabel, t, locale, setupLanguage, Date: FixedDate, Intl, URLSearchParams, AbortController, setTimeout, clearTimeout,
+    document: {documentElement: {}, querySelector: get, querySelectorAll: () => []}, location: {hash: ''},
     window: {PUBLIC_DASHBOARD_CONFIG: {SUPABASE_URL: 'https://example.test', SUPABASE_ANON_KEY: 'public-test-key'}, addEventListener() {}},
     fetch: async url => ({ok: true, json: async () => datasets[new URL(url).pathname.split('/').pop()] || [], headers: {get: () => '0-0/0'}})
   });
   const code = (await readFile(new URL('../app.js', import.meta.url), 'utf8'))
-    .replace(/^import .*?;\r?\n/m, '')
+    .replace(/^import .*?;\r?\n/gm, '')
     .replace(/loadData\(\);\s*$/, 'globalThis.loading = loadData();');
   vm.runInContext(code, context);
   await context.loading;
@@ -126,4 +128,19 @@ test('custom dates include Berlin midnight and exclude the following day', async
   const range = app.run('currentRange()');
   assert.equal(new Date(range.from).toISOString(), '2026-11-02T23:00:00.000Z');
   assert.equal(new Date(range.to).toISOString(), '2026-11-03T23:00:00.000Z');
+});
+
+test('switching languages updates live labels while keeping date filters and counts', async () => {
+  const app = await dashboard();
+  app.get('#periodFilter').value = '7';
+  setLanguage('de');
+  app.run('render()');
+  assert.equal(app.get('#periodFilter').value, '7');
+  assert.equal(app.get('#vehicleCount').textContent, '2 von 3 erkannt');
+  assert.equal(app.get('#metricRecognized').textContent, '2');
+  assert.match(app.get('#cameraEvents').innerHTML, /Fahrzeugkennung/);
+  assert.match(app.get('#vehicleChart').innerHTML, /Nicht identifiziert/);
+  setLanguage('en');
+  app.run('render()');
+  assert.equal(app.get('#vehicleCount').textContent, '2 of 3 recognized');
 });
