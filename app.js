@@ -10,12 +10,10 @@ const MAX_CUSTOM_RANGE_DAYS = 90;          // keeps every request light on the d
 const connectorLabel = id => (String(id) === '1' ? 'Right connector' : String(id) === '2' ? 'Left connector' : `Connector ${id}`);
 
 // The browser only requests these public views and these explicit columns.
-// Keep this list aligned with supabase_public_views.sql.
 const DATASETS = {
   charging_sessions: {
     label: 'Charging sessions', view: 'public_dashboard_charging_sessions', order: 'created_at.desc',
-    columns: ['id','transaction_id','status','station_sn','connector_id','site_id','lookup_brand','monta_start_time','monta_end_time','evb_start_time','evb_end_time','duration_seconds','energy_kwh','meter_start','meter_stop','camera_capture_status','gemini_status','campaign_status','created_at','updated_at','controller_id','resolved_brand','resolved_model','resolved_color','identity_source','identity_confidence','identity_updated_at','evccid_hash'],
-    display: ['transaction_id','status','site_id','station_sn','connector_id','resolved_brand','energy_kwh','created_at']
+    columns: ['id','station_sn','lookup_brand','monta_start_time','evb_start_time','created_at','resolved_brand','resolved_model','resolved_color','identity_source','identity_updated_at']
   },
   camera_events: {
     label: 'Camera events', view: 'public_dashboard_camera_events', order: 'capture_time.desc',
@@ -39,12 +37,9 @@ const DATASETS = {
   }
 };
 
-// Proof of play is large, so it is NOT downloaded in bulk. The database filters it by station and
-// date range (needs the station_sn column from fix_proof_of_play_station.sql) and returns an exact
-// count plus the latest few rows.
+// The public playback view provides counts by Berlin calendar day.
 const PLAYS = {
-  label: 'Proof of play', view: 'public_dashboard_proof_of_play', recent: 5,
-  columns: ['id','campaign_id','player_id','played_at','duration_seconds','impressions','measurement_type']
+  label: 'Proof of play', view: 'public_dashboard_barth_daily_plays'
 };
 
 const state = {
@@ -165,8 +160,6 @@ function scopeToBarth() {
       barthSessionIds.has(row.session_id) || (row.camera_event_id && barthCameraEventIds.has(row.camera_event_id))
     );
   });
-  // Proof of play is not in state.data: loadPlays() asks the database for Barth only, using the
-  // station_sn column that comes from station_connectors.player_id (see 06_Data_Model.md).
 }
 
 function requestHeaders(connection, extra = {}) {
@@ -175,23 +168,23 @@ function requestHeaders(connection, extra = {}) {
   return headers;
 }
 
-// Exact Barth play count for the selected dates, plus the latest few plays.
+// Barth playback totals for the selected calendar dates.
 async function loadPlays() {
   const connection = config();
   if (!connection.url || !connection.key) return;
   const requestId = ++state.playRequest;
-  const {from, to} = currentRange();
-  const params = new URLSearchParams({
-    select: PLAYS.columns.join(','), order: 'played_at.desc', limit: String(PLAYS.recent),
-    station_sn: `eq.${BARTH_STATION_SN}`
-  });
-  if (from !== null) params.append('played_at', `gte.${new Date(from).toISOString()}`);
-  if (to !== null) params.append('played_at', `lt.${new Date(to).toISOString()}`);
+  const choice = $('#periodFilter').value;
+  const from = choice === 'custom' ? $('#dateFrom').value
+    : choice === 'all' ? '' : addDays(berlinToday(), 1 - Number(choice));
+  const to = choice === 'custom' ? $('#dateTo').value : '';
+  const params = new URLSearchParams({select: 'play_date,play_count', order: 'play_date.desc'});
+  if (from) params.append('play_date', `gte.${from}`);
+  if (to) params.append('play_date', `lte.${to}`);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
     const response = await fetch(`${connection.url}/rest/v1/${PLAYS.view}?${params}`, {
-      headers: requestHeaders(connection, {Prefer: 'count=exact'}), signal: controller.signal
+      headers: requestHeaders(connection), signal: controller.signal
     });
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}));
@@ -199,10 +192,9 @@ async function loadPlays() {
     }
     const rows = await response.json();
     if (!Array.isArray(rows)) throw new Error(`${PLAYS.label}: unexpected response`);
-    const match = /\/(\d+)$/.exec(response.headers.get('Content-Range') || '');
     if (requestId !== state.playRequest) return;   // a newer selection superseded this one
     state.plays = rows;
-    state.playTotal = match ? Number(match[1]) : rows.length;
+    state.playTotal = rows.reduce((total, day) => total + Number(day.play_count), 0);
     delete state.errors.proof_of_play;
   } catch (error) {
     if (requestId !== state.playRequest) return;
@@ -341,7 +333,12 @@ function renderMedia() {
   $('#mediaSuccess').textContent = formatNumber(successful);
   $('#mediaPlays').textContent = state.playTotal === null ? '—' : formatNumber(state.playTotal);
   $('#triggerList').innerHTML = list(triggers, row => `<div class="compact-row"><div class="compact-symbol media-symbol">✦</div><div class="compact-main"><strong>${escapeHtml(t(row.campaign_name || row.campaign_id || 'Campaign'))}</strong><span>${escapeHtml(t(row.platform || 'Media platform'))} · ${formatDate(row.created_at)}</span></div><span class="status-chip">${escapeHtml(t(row.status || 'Recorded'))}</span></div>`, 'No ad triggers for this selection.');
-  $('#playList').innerHTML = list(state.plays, row => `<div class="compact-row"><div class="compact-symbol media-symbol">▶</div><div class="compact-main"><strong>${escapeHtml(t(row.campaign_id || 'Campaign'))}</strong><span>${escapeHtml(t(row.player_id || 'Player'))} · ${formatDate(row.played_at)}</span></div><b>${formatNumber(row.duration_seconds, 0)}s</b></div>`, 'No confirmed playback for this selection.');
+  $('#playList').innerHTML = list(state.plays, day => {
+    const date = new Date(day.play_date).toLocaleDateString(locale(), {
+      timeZone: 'UTC', day: '2-digit', month: 'short', year: 'numeric'
+    });
+    return `<div class="compact-row"><div class="compact-symbol media-symbol">▶</div><div class="compact-main"><strong>${escapeHtml(date)}</strong></div><b>${formatNumber(day.play_count)}</b></div>`;
+  }, 'No confirmed playback for this selection.');
 }
 
 function renderInsights() {
@@ -354,25 +351,7 @@ function renderInsights() {
   renderBarList($('#insightBrandChart'), [...brands], '', 20);
   $('#insightBrandCount').textContent = t('{count} brands', {count: formatNumber(brands.size)});
 
-  const hashVisits = new Map();
-  sessions.forEach(row => {
-    if (!row.evccid_hash) return;
-    if (!hashVisits.has(row.evccid_hash)) hashVisits.set(row.evccid_hash, []);
-    hashVisits.get(row.evccid_hash).push(row);
-  });
-  const uniqueVehicles = hashVisits.size;
-  const repeatVehicles = [...hashVisits.values()].filter(visits => visits.length > 1);
-  const repeatRate = uniqueVehicles ? Math.round((repeatVehicles.length / uniqueVehicles) * 100) : 0;
-  $('#insightUnique').textContent = formatNumber(uniqueVehicles);
-  $('#insightRepeat').textContent = formatNumber(repeatVehicles.length);
-  $('#insightRepeatRate').textContent = uniqueVehicles ? `${repeatRate}%` : '—';
-
-  const ranked = repeatVehicles.sort((a, b) => b.length - a.length).slice(0, 5);
-  $('#insightRepeatList').innerHTML = ranked.length ? ranked.map((visits, index) => {
-    const latest = visits.reduce((best, row) => dateValue(row.created_at) > dateValue(best.created_at) ? row : best, visits[0]);
-    const brand = visits.find(row => row.brand)?.brand;
-    return `<div class="compact-row"><div class="compact-symbol media-symbol">↻</div><div class="compact-main"><strong>${escapeHtml(t('Returning vehicle #{number}', {number: index + 1}))}${brand ? ` · ${escapeHtml(brand)}` : ''}</strong><span>${escapeHtml(t('{count} visits · last seen {date}', {count: formatNumber(visits.length), date: formatDate(latest.created_at)}))}</span></div></div>`;
-  }).join('') : empty('No repeat visits yet for this selection.');
+  $('#insightRepeatList').innerHTML = empty('Repeat-visit statistics are unavailable in the public dataset.');
 }
 
 function renderConnection() {

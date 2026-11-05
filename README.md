@@ -38,9 +38,9 @@ make the dashboard work.
 
 The dashboard scopes records to Barth station `2251110030800001`. Non-playback
 datasets load up to 5,000 recent rows each; a notice appears when that limit is
-reached. Proof of play is filtered by station and selected dates on the server,
-returning an exact count and the latest five records instead of a bulk download.
-The UI notes the approximately 14-day live playback retention when applicable.
+reached. The `public_dashboard_barth_daily_plays` view exposes playback totals
+for Barth by Berlin calendar day over the most recent 14 days. The dashboard
+sums the selected days and lists up to five recent daily totals.
 
 ## Vehicle recognition
 
@@ -55,7 +55,8 @@ Repeated camera frames and provider attempts do not count as additional arrivals
 Unknown brands remain unidentified and do not increase the recognized count.
 The overview, vehicle mix, recognition feed, and insights use this shared result.
 The feed distinguishes unique identifiers, AI vision, and saved vehicle profiles.
-EVCCID hashes support repeat-visit counts but are not displayed in the feed.
+Repeat-visit statistics are unavailable because the public charging sessions
+view omits the EVCCID hash.
 
 Date filters use the session arrival time (`created_at`, with charging start
 times as fallbacks), so a later recognition does not move an arrival to another
