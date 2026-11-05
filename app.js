@@ -44,6 +44,7 @@ const PLAYS = {
 
 const state = {
   plays: [], playTotal: null, playRequest: 0, notice: '',
+  repeatVisits: null, repeatVisitRequest: 0, repeatVisitError: false,
   data: Object.fromEntries(Object.keys(DATASETS).map(name => [name, []])),
   errors: {}, selectedDataset: 'charging_sessions', partial: {}, connected: false,
   status: 'Checking connection', updatedAt: null
@@ -168,15 +169,20 @@ function requestHeaders(connection, extra = {}) {
   return headers;
 }
 
+function calendarRange() {
+  const choice = $('#periodFilter').value;
+  const from = choice === 'custom' ? $('#dateFrom').value
+    : choice === 'all' ? '' : addDays(berlinToday(), 1 - Number(choice));
+  const to = choice === 'custom' ? $('#dateTo').value : '';
+  return {from, to};
+}
+
 // Barth playback totals for the selected calendar dates.
 async function loadPlays() {
   const connection = config();
   if (!connection.url || !connection.key) return;
   const requestId = ++state.playRequest;
-  const choice = $('#periodFilter').value;
-  const from = choice === 'custom' ? $('#dateFrom').value
-    : choice === 'all' ? '' : addDays(berlinToday(), 1 - Number(choice));
-  const to = choice === 'custom' ? $('#dateTo').value : '';
+  const {from, to} = calendarRange();
   const params = new URLSearchParams({select: 'play_date,play_count', order: 'play_date.desc'});
   if (from) params.append('play_date', `gte.${from}`);
   if (to) params.append('play_date', `lte.${to}`);
@@ -208,6 +214,41 @@ async function loadPlays() {
   render();
 }
 
+async function loadRepeatVisits() {
+  const connection = config();
+  if (!connection.url || !connection.key) return;
+  const requestId = ++state.repeatVisitRequest;
+  state.repeatVisits = null;
+  state.repeatVisitError = false;
+  renderRepeatVisits();
+
+  const {from, to} = calendarRange();
+  const params = new URLSearchParams();
+  if (from) params.set('p_from', from);
+  if (to) params.set('p_to', to);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(`${connection.url}/rest/v1/rpc/get_barth_repeat_visit_totals?${params}`, {
+      headers: requestHeaders(connection), signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const totals = await response.json();
+    const fields = ['unique_vehicles', 'returning_vehicles', 'two_visits', 'three_visits', 'four_or_more_visits'];
+    if (!fields.every(field => Number.isSafeInteger(totals?.[field]) && totals[field] >= 0)) {
+      throw new Error('Unexpected repeat-visit totals');
+    }
+    if (requestId !== state.repeatVisitRequest) return;
+    state.repeatVisits = totals;
+  } catch {
+    if (requestId !== state.repeatVisitRequest) return;
+    state.repeatVisitError = true;
+  } finally {
+    clearTimeout(timeout);
+  }
+  renderRepeatVisits();
+}
+
 function refreshMessage() {
   if (Object.keys(state.errors).length) {
     showMessage(t('Some datasets could not load: {errors}', {errors: Object.values(state.errors).map(message => t(message)).join(' · ')}), 'error');
@@ -231,6 +272,7 @@ async function loadData() {
   renderConnection();
   const entries = Object.entries(DATASETS);
   const playsLoading = loadPlays();
+  const repeatVisitsLoading = loadRepeatVisits();
   const results = await Promise.allSettled(entries.map(([name, spec]) => fetchDataset(connection, name, spec)));
   state.errors = state.errors.proof_of_play ? {proof_of_play: state.errors.proof_of_play} : {};
   results.forEach((result, index) => {
@@ -249,7 +291,7 @@ async function loadData() {
   state.updatedAt = state.connected ? new Date() : null;
   refreshMessage();
   render();
-  await playsLoading;
+  await Promise.all([playsLoading, repeatVisitsLoading]);
 }
 
 function filtered(name, field) {
@@ -351,7 +393,31 @@ function renderInsights() {
   renderBarList($('#insightBrandChart'), [...brands], '', 20);
   $('#insightBrandCount').textContent = t('{count} brands', {count: formatNumber(brands.size)});
 
-  $('#insightRepeatList').innerHTML = empty('Repeat-visit statistics are unavailable in the public dataset.');
+  renderRepeatVisits();
+}
+
+function renderRepeatVisits() {
+  const totals = state.repeatVisits;
+  $('#insightUnique').textContent = totals ? formatNumber(totals.unique_vehicles) : '—';
+  $('#insightRepeat').textContent = totals ? formatNumber(totals.returning_vehicles) : '—';
+  $('#insightRepeatRate').textContent = totals?.unique_vehicles
+    ? `${formatNumber(Math.round(totals.returning_vehicles / totals.unique_vehicles * 100))}%`
+    : '—';
+
+  const listElement = $('#insightRepeatList');
+  if (!totals) {
+    listElement.innerHTML = empty(state.repeatVisitError || !config().key
+      ? 'Repeat-visit statistics are temporarily unavailable.'
+      : 'Loading repeat-visit statistics…');
+  } else if (totals.returning_vehicles === 0) {
+    listElement.innerHTML = empty('No repeat visits in this period.');
+  } else {
+    renderBarList(listElement, [
+      [t('2 visits'), totals.two_visits],
+      [t('3 visits'), totals.three_visits],
+      [t('4+ visits'), totals.four_or_more_visits]
+    ].filter(([, count]) => count > 0));
+  }
 }
 
 function renderConnection() {
@@ -378,6 +444,7 @@ function onRangeChange() {
   refreshMessage();
   render();
   loadPlays();
+  loadRepeatVisits();
 }
 $('#periodFilter').addEventListener('change', onRangeChange);
 $('#dateFrom').addEventListener('change', onRangeChange);

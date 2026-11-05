@@ -85,7 +85,15 @@ async function dashboard() {
     recognitionRecords, sourceLabel, t, locale, setupLanguage, Date: FixedDate, Intl, URLSearchParams, AbortController, setTimeout, clearTimeout,
     document: {documentElement: {}, querySelector: get, querySelectorAll: () => []}, location: {hash: ''},
     window: {PUBLIC_DASHBOARD_CONFIG: {SUPABASE_URL: 'https://example.test', SUPABASE_ANON_KEY: 'public-test-key'}, addEventListener() {}},
-    fetch: async url => ({ok: true, json: async () => datasets[new URL(url).pathname.split('/').pop()] || [], headers: {get: () => '0-0/0'}})
+    fetch: async url => {
+      const request = new URL(url);
+      const resource = request.pathname.split('/').pop();
+      const totals = request.searchParams.get('p_from') === '2000-01-01'
+        ? {unique_vehicles: 0, returning_vehicles: 0, two_visits: 0, three_visits: 0, four_or_more_visits: 0}
+        : {unique_vehicles: 5, returning_vehicles: 2, two_visits: 1, three_visits: 1, four_or_more_visits: 0};
+      const payload = resource === 'get_barth_repeat_visit_totals' ? totals : datasets[resource] || [];
+      return {ok: true, json: async () => payload};
+    }
   });
   const code = (await readFile(new URL('../app.js', import.meta.url), 'utf8'))
     .replace(/^import .*?;\r?\n/gm, '')
@@ -143,4 +151,20 @@ test('switching languages updates live labels while keeping date filters and cou
   setLanguage('en');
   app.run('render()');
   assert.equal(app.get('#vehicleCount').textContent, '2 of 3 recognized');
+});
+
+test('repeat-visit cards use aggregate counts and refresh for a custom date range', async () => {
+  const app = await dashboard();
+  assert.equal(app.get('#insightUnique').textContent, '5');
+  assert.equal(app.get('#insightRepeat').textContent, '2');
+  assert.equal(app.get('#insightRepeatRate').textContent, '40%');
+  assert.match(app.get('#insightRepeatList').innerHTML, /2 visits/);
+
+  app.get('#periodFilter').value = 'custom';
+  app.get('#dateFrom').value = '2000-01-01';
+  app.get('#dateTo').value = '2000-01-02';
+  await app.run('loadRepeatVisits()');
+  assert.equal(app.get('#insightUnique').textContent, '0');
+  assert.equal(app.get('#insightRepeat').textContent, '0');
+  assert.match(app.get('#insightRepeatList').innerHTML, /No repeat visits in this period/);
 });

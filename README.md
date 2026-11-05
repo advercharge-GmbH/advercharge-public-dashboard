@@ -55,8 +55,11 @@ Repeated camera frames and provider attempts do not count as additional arrivals
 Unknown brands remain unidentified and do not increase the recognized count.
 The overview, vehicle mix, recognition feed, and insights use this shared result.
 The feed distinguishes unique identifiers, AI vision, and saved vehicle profiles.
-Repeat-visit statistics are unavailable because the public charging sessions
-view omits the EVCCID hash.
+The `get_barth_repeat_visit_totals` RPC groups sessions by EVCCID hash inside
+Supabase. Its public response contains only counts of unique and returning
+vehicles and three visit-frequency buckets. The repeat rate is the share of
+tracked vehicles that visited more than once during the selected Berlin
+calendar dates. Vehicle hashes and individual visit histories stay private.
 
 Date filters use the session arrival time (`created_at`, with charging start
 times as fallbacks), so a later recognition does not move an arrival to another
